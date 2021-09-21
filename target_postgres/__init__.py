@@ -45,8 +45,23 @@ def new_csv_file_entry():
     return {'file': csv_f, 'writer': writer}
 
 
+def get_state_changes(prev_state, state):
+    result = {}
+    if 'bookmarks' in state:
+        for key, value in state['bookmarks']:
+            prev_value = prev_state.get('bookmarks', {}).get(key)
+            if prev_value != value:
+                result[key] = value
+    return result
+
+
+def set_bookmark(state, stream, value):
+    state['bookmarks'][stream] = value
+
+
 def persist_lines(config, lines):
     state = None
+    last_emitted_state = None
     schemas = {}
     key_properties = {}
     headers = {}
@@ -55,9 +70,18 @@ def persist_lines(config, lines):
     row_count = {}
     stream_to_sync = {}
     primary_key_exists = {}
-    batch_size = config['batch_size'] if 'batch_size' in config else 100000
+
+    # Was renamed from 'batch_size', but it's important to keep the old name
+    # for backward compatability.
+    max_batch_size = config.get('max_batch_size', config.get('batch_size', 100000))
+    # What's the smallest batch size we're ok with? Allows us to output
+    # state more eagerly, so we don't lose the work of a stream that fails
+    # halfway through.
+    min_batch_size = config.get('min_batch_size', max_batch_size)
 
     now = datetime.now().strftime('%Y%m%dT%H%M%S')
+
+    to_flush = set()
 
     # Loop over lines from stdin
     for line in lines:
@@ -91,7 +115,7 @@ def persist_lines(config, lines):
             if stream not in primary_key_exists:
                 primary_key_exists[stream] = {}
             if primary_key_string and primary_key_string in primary_key_exists[stream]:
-                flush_records(o, csv_files_to_load, row_count, primary_key_exists, sync)
+                to_flush.add(stream)
 
             writer = csv_files_to_load[o['stream']]['writer']
             writer.writerow(sync.record_to_csv_row(o['record']))
@@ -99,13 +123,10 @@ def persist_lines(config, lines):
             if primary_key_string:
                 primary_key_exists[stream][primary_key_string] = True
 
-            if row_count[o['stream']] >= batch_size:
-                flush_records(o, csv_files_to_load, row_count, primary_key_exists, sync)
-
-            state = None
         elif t == 'STATE':
             logger.debug('Setting state to {}'.format(o['value']))
             state = o['value']
+
         elif t == 'SCHEMA':
             if 'stream' not in o:
                 raise Exception("Line is missing required key 'stream': {}".format(line))
@@ -126,21 +147,44 @@ def persist_lines(config, lines):
                 csv_files_to_load[stream] = new_csv_file_entry()
             else:
                 logger.warning('more than one schema message found for stream %r; only the first will be used', stream)
+
         elif t == 'ACTIVATE_VERSION':
             logger.debug('ACTIVATE_VERSION message')
+
         else:
             raise Exception("Unknown message type {} in message {}"
                             .format(o['type'], o))
 
+        # Decide which streams to flush, if any.
+        changes = get_state_changes(last_emitted_state, state)
+        write_bookmark = False
+        for stream, sync in stream_to_sync.items():
+            count = row_count[stream]
+            do_flush = stream in to_flush
+            if count >= max_batch_size:
+                do_flush = True
+            elif stream in changes:
+                if count == 0 or count >= min_batch_size:
+                    do_flush = True
+
+            if do_flush:
+                if row_count != 0:
+                    flush_records(stream, csv_files_to_load, row_count, primary_key_exists, sync)
+                if stream in changes:
+                    write_bookmark = True
+                    set_bookmark(last_emitted_state, stream, changes[stream])
+
+        if write_bookmark:
+            emit_state(last_emitted_state)
+
     for (stream_name, count) in row_count.items():
         if count > 0:
-            stream_to_sync[stream_name].load_csv(csv_files_to_load[stream_name]['file'], count)
+            flush_records(stream_name, csv_files_to_load, count, primary_key_exists, sync)
 
-    return state
+    emit_state(state)
 
 
-def flush_records(o, csv_files_to_load, row_count, primary_key_exists, sync):
-    stream = o['stream']
+def flush_records(stream, csv_files_to_load, row_count, primary_key_exists, sync):
     csv_files_to_load[stream]['file'].flush()
     # Convert the file to the underlying binary file.
     csv_file = csv_files_to_load[stream]['file'].detach()
@@ -162,9 +206,8 @@ def main():
         config = {}
 
     input = io.TextIOWrapper(sys.stdin.buffer, encoding='utf-8')
-    state = persist_lines(config, input)
+    persist_lines(config, input)
 
-    emit_state(state)
     logger.debug("Exiting normally")
 
 
