@@ -6,6 +6,7 @@ import collections
 import inflection
 import re
 import itertools
+import time
 
 logger = singer.get_logger()
 
@@ -128,7 +129,17 @@ class DbSync:
             self.connection_config['port']
         )
 
-        return psycopg2.connect(conn_string)
+        start = time.monotonic()
+        # Keep attempting the connection for 5 minutes so transient errors
+        # don't kill a tap run.
+        retry_until = start + 300
+        while True:
+            try:
+                return psycopg2.connect(conn_string)
+            except psycopg2.Error as e:
+                if time.monotonic() > retry_until:
+                    raise
+                time.sleep(5)
 
     def query(self, query, params=None):
         with self.open_connection() as connection:
