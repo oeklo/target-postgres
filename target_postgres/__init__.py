@@ -87,7 +87,7 @@ def persist_lines(config, lines):
 
     # Loop over lines from stdin
     for line in lines:
-        to_flush = set()
+        flushed = set()
         line = sanitize_line(line)
         try:
             o = json.loads(line)
@@ -118,7 +118,8 @@ def persist_lines(config, lines):
             if stream not in primary_key_exists:
                 primary_key_exists[stream] = {}
             if primary_key_string and primary_key_string in primary_key_exists[stream]:
-                to_flush.add(stream)
+                flush_records(stream, csv_files_to_load, row_count, primary_key_exists, sync)
+                flushed.add(stream)
 
             writer = csv_files_to_load[o['stream']]['writer']
             writer.writerow(sync.record_to_csv_row(o['record']))
@@ -165,21 +166,24 @@ def persist_lines(config, lines):
             count = row_count[stream]
 
             do_flush = False
-            if stream in to_flush:
-                do_flush = True
-            elif count >= max_batch_size:
+            if count >= max_batch_size:
+                logger.info('%s >= max_batch_size', stream)
                 do_flush = True
             elif stream in changes:
-                if count == 0 or count >= min_batch_size:
+                if count == 0:
+                    do_flush = True
+                elif count >= min_batch_size:
+                    logger.info('%s >= min_batch_size', stream)
                     do_flush = True
                 elif not last_emitted_state:
+                    logger.info('%s no last_emitted_state, flushing')
                     # Since we don't start with a complete picture of the
                     # original state, the first state object we get we want
                     # to output completely.
                     do_flush = True
 
             if do_flush:
-                if row_count[stream] != 0:
+                if count != 0 and not stream in flushed:
                     flush_records(stream, csv_files_to_load, row_count, primary_key_exists, sync)
                 if stream in changes:
                     write_bookmark = True

@@ -234,11 +234,10 @@ class DbSync:
             )
 
         return """INSERT INTO {} ({})
-        (SELECT {}s.* FROM {} s LEFT OUTER JOIN {} t ON {} WHERE {})
+        (SELECT s.* FROM {} s LEFT OUTER JOIN {} t ON {} WHERE {})
         """.format(
             table,
             ', '.join(columns),
-            self.distinct_on_primary_key('s'),
             temp_table,
             table,
             self.primary_key_condition('t'),
@@ -250,27 +249,14 @@ class DbSync:
         columns = self.column_names()
         table = self.table_name(stream_schema_message['stream'], False)
         temp_table = self.table_name(stream_schema_message['stream'], True)
-        return """
-        WITH s AS (
-            SELECT {}* FROM {}
-        )
-        UPDATE {} SET {} FROM s
+        return """UPDATE {} SET {} FROM {} s
         WHERE {}
         """.format(
-            self.distinct_on_primary_key(),
-            temp_table,
             table,
             ', '.join(['{}=s.{}'.format(c, c) for c in columns]),
+            temp_table,
             self.primary_key_condition(table)
         )
-
-    def distinct_on_primary_key(self, table=''):
-        names = primary_column_names(self.stream_schema_message)
-        if not names:
-            return ''
-        if table:
-            names = [f'{table}.{name}' for name in names]
-        return f'DISTINCT ON ({", ".join(names)}) '
 
     def primary_key_condition(self, right_table):
         stream_schema_message = self.stream_schema_message
@@ -300,10 +286,8 @@ class DbSync:
             for (name, schema) in self.flatten_schema.items()
         ]
 
-        primary_key = []
-        if not is_temporary:
-            primary_key = ["PRIMARY KEY ({})".format(', '.join(primary_column_names(stream_schema_message)))] \
-                if len(stream_schema_message['key_properties']) else []
+        primary_key = ["PRIMARY KEY ({})".format(', '.join(primary_column_names(stream_schema_message)))] \
+            if len(stream_schema_message['key_properties']) else []
 
         return 'CREATE {}TABLE {} ({})'.format(
             'TEMP ' if is_temporary else '',
