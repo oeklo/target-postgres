@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 
-import argparse
-import csv
-import io
-import os
-import sys
-import json
-import re
-import threading
-import http.client
-import urllib
 from datetime import datetime
-import collections
 from tempfile import TemporaryFile
+import argparse
+import collections
+import copy
+import csv
+import http.client
+import io
+import json
+import os
+import re
+import sys
+import threading
+import urllib
 
 import pkg_resources
 from jsonschema.validators import Draft4Validator
@@ -47,21 +48,24 @@ def new_csv_file_entry():
 
 def get_state_changes(prev_state, state):
     result = {}
-    if 'bookmarks' in state:
-        for key, value in state['bookmarks']:
-            prev_value = prev_state.get('bookmarks', {}).get(key)
-            if prev_value != value:
-                result[key] = value
+    prev_state = prev_state or {}
+    state = state or {}
+    for key, value in state.get('bookmarks', {}).items():
+        prev_value = prev_state.get('bookmarks', {}).get(key)
+        if prev_value != value:
+            result[key] = value
     return result
 
 
 def set_bookmark(state, stream, value):
-    state['bookmarks'][stream] = value
+    bookmarks = state['bookmarks'] = state.get('bookmarks') or {}
+    bookmarks[stream] = value
 
 
 def persist_lines(config, lines):
     state = None
     last_emitted_state = None
+
     schemas = {}
     key_properties = {}
     headers = {}
@@ -160,11 +164,19 @@ def persist_lines(config, lines):
         write_bookmark = False
         for stream, sync in stream_to_sync.items():
             count = row_count[stream]
-            do_flush = stream in to_flush
-            if count >= max_batch_size:
+
+            do_flush = False
+            if stream in to_flush:
+                do_flush = True
+            elif count >= max_batch_size:
                 do_flush = True
             elif stream in changes:
                 if count == 0 or count >= min_batch_size:
+                    do_flush = True
+                elif not last_emitted_state:
+                    # Since we don't start with a complete picture of the
+                    # original state, the first state object we get we want
+                    # to output completely.
                     do_flush = True
 
             if do_flush:
@@ -172,9 +184,12 @@ def persist_lines(config, lines):
                     flush_records(stream, csv_files_to_load, row_count, primary_key_exists, sync)
                 if stream in changes:
                     write_bookmark = True
-                    set_bookmark(last_emitted_state, stream, changes[stream])
+                    if last_emitted_state:
+                        set_bookmark(last_emitted_state, stream, changes[stream])
 
         if write_bookmark:
+            if not last_emitted_state:
+                last_emitted_state = copy.deepcopy(state)
             emit_state(last_emitted_state)
 
     for (stream_name, count) in row_count.items():
