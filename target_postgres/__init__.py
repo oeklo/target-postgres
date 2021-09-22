@@ -85,10 +85,9 @@ def persist_lines(config, lines):
 
     now = datetime.now().strftime('%Y%m%dT%H%M%S')
 
-    to_flush = set()
-
     # Loop over lines from stdin
     for line in lines:
+        to_flush = set()
         line = sanitize_line(line)
         try:
             o = json.loads(line)
@@ -180,7 +179,7 @@ def persist_lines(config, lines):
                     do_flush = True
 
             if do_flush:
-                if row_count != 0:
+                if row_count[stream] != 0:
                     flush_records(stream, csv_files_to_load, row_count, primary_key_exists, sync)
                 if stream in changes:
                     write_bookmark = True
