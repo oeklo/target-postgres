@@ -3,7 +3,7 @@ from setuptools import setup
 
 setup(
     name="target-postgres",
-    version="1.1.16",
+    version="1.1.17",
     description="Singer.io target for Postgres",
     author="Statsbot",
     url="https://statsbot.co",
