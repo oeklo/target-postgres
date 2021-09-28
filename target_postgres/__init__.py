@@ -182,7 +182,7 @@ def persist_lines(config, lines):
 
     for (stream_name, count) in row_count.items():
         if count > 0:
-            flush_records(stream_name, csv_files_to_load, count, sync)
+            flush_records(stream_name, csv_files_to_load, row_count, sync)
 
     emit_state(state)
 
